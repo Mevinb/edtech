@@ -144,7 +144,11 @@ class DifficultyAdapter:
         """
         
         try:
-            adapted_content = self.ai_engine.generate_response(prompt)
+            # Use the AI engine's answer_question method instead of generate_response
+            adapted_content = self.ai_engine.answer_question(
+                f"Adapt this content for {difficulty.value} level: {content}", 
+                prompt
+            )
             key_concepts = self._extract_key_concepts(adapted_content)
             examples = self._extract_examples(adapted_content)
             
