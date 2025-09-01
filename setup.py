@@ -11,12 +11,8 @@ def install_dependencies():
     # Core packages (always install)
     core_packages = [
         "streamlit>=1.28.1",
-        "fastapi>=0.104.1", 
-        "uvicorn>=0.24.0",
         "python-dotenv>=1.0.0",
-        "pydantic>=2.5.0",
         "requests>=2.31.0",
-        "pandas>=2.1.3",
         "numpy>=1.25.2"
     ]
     
@@ -26,6 +22,19 @@ def install_dependencies():
         "pdfplumber>=0.10.3", 
         "pymupdf>=1.23.8",
         "Pillow>=10.1.0"
+    ]
+    
+    # Voice processing packages
+    voice_packages = [
+        "speechrecognition>=3.10.0",
+        "pyttsx3>=2.90",
+        "gtts>=2.4.0",
+        "pyaudio>=0.2.11"
+    ]
+    
+    # Database packages
+    db_packages = [
+        "sqlalchemy>=2.0.23"
     ]
     
     # AI packages (optional)
@@ -47,14 +56,19 @@ def install_dependencies():
         for package in pdf_packages:
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
-        # Try to install AI packages
-        print("🤖 Installing AI packages (this may take a while)...")
-        for package in ai_packages:
+        # Install voice packages
+        print("🎤 Installing voice processing packages...")
+        for package in voice_packages:
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package])
                 print(f"✅ {package} installed successfully")
             except subprocess.CalledProcessError:
                 print(f"⚠️ Failed to install {package}, skipping...")
+        
+        # Install database packages
+        print("🗄️ Installing database packages...")
+        for package in db_packages:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
         print("✅ Dependencies installation completed!")
         

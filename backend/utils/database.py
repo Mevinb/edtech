@@ -71,6 +71,56 @@ class DatabaseManager:
                     )
                 """)
                 
+                # Gamification stats table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_gamification_stats (
+                        user_id TEXT PRIMARY KEY,
+                        total_xp INTEGER DEFAULT 0,
+                        current_level TEXT DEFAULT 'beginner',
+                        badges_earned TEXT DEFAULT '[]',
+                        current_streak INTEGER DEFAULT 0,
+                        longest_streak INTEGER DEFAULT 0,
+                        total_study_time INTEGER DEFAULT 0,
+                        quizzes_completed INTEGER DEFAULT 0,
+                        perfect_scores INTEGER DEFAULT 0,
+                        questions_asked INTEGER DEFAULT 0,
+                        voice_interactions INTEGER DEFAULT 0,
+                        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Achievements table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS achievements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        achievement_id TEXT UNIQUE NOT NULL,
+                        user_id TEXT NOT NULL,
+                        badge_type TEXT NOT NULL,
+                        earned_date TIMESTAMP NOT NULL,
+                        xp_earned INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Daily challenges table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_challenges (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        challenge_id TEXT NOT NULL,
+                        challenge_date DATE NOT NULL,
+                        target_value INTEGER NOT NULL,
+                        current_progress INTEGER DEFAULT 0,
+                        completed BOOLEAN DEFAULT FALSE,
+                        xp_reward INTEGER NOT NULL,
+                        completed_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, challenge_id, challenge_date)
+                    )
+                """)
+                
                 conn.commit()
                 logger.info("Database initialized successfully")
                 
@@ -337,3 +387,192 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error cleaning up data: {str(e)}")
             raise
+    
+    # Gamification Database Methods
+    
+    def get_user_gamification_stats(self, user_id: str) -> Optional[Dict]:
+        """Get user's gamification statistics"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM user_gamification_stats WHERE user_id = ?
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                
+                columns = [col[0] for col in cursor.description]
+                stats = dict(zip(columns, row))
+                
+                # Parse JSON fields
+                stats['badges_earned'] = json.loads(stats['badges_earned'])
+                
+                return stats
+                
+        except Exception as e:
+            logger.error(f"Error getting gamification stats: {str(e)}")
+            return None
+    
+    def save_user_gamification_stats(self, user_id: str, stats: Dict):
+        """Save or update user's gamification statistics"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Convert badges to JSON
+                badges_json = json.dumps(stats['badges_earned'])
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO user_gamification_stats 
+                    (user_id, total_xp, current_level, badges_earned, current_streak, 
+                     longest_streak, total_study_time, quizzes_completed, perfect_scores,
+                     questions_asked, voice_interactions, last_activity, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user_id,
+                    stats['total_xp'],
+                    stats['current_level'],
+                    badges_json,
+                    stats['current_streak'],
+                    stats['longest_streak'],
+                    stats['total_study_time'],
+                    stats['quizzes_completed'],
+                    stats['perfect_scores'],
+                    stats.get('questions_asked', 0),
+                    stats.get('voice_interactions', 0),
+                    stats['last_activity'],
+                    datetime.now().isoformat()
+                ))
+                
+                conn.commit()
+                logger.info(f"Gamification stats saved for user: {user_id}")
+                
+        except Exception as e:
+            logger.error(f"Error saving gamification stats: {str(e)}")
+            raise
+    
+    def save_achievement(self, achievement: Dict):
+        """Save a new achievement"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    INSERT OR IGNORE INTO achievements 
+                    (achievement_id, user_id, badge_type, earned_date, xp_earned)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    achievement['achievement_id'],
+                    achievement['user_id'],
+                    achievement['badge_type'],
+                    achievement['earned_date'],
+                    achievement['xp_earned']
+                ))
+                
+                conn.commit()
+                logger.info(f"Achievement saved: {achievement['badge_type']}")
+                
+        except Exception as e:
+            logger.error(f"Error saving achievement: {str(e)}")
+            raise
+    
+    def get_user_achievements(self, user_id: str) -> List[Dict]:
+        """Get all achievements for a user"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM achievements 
+                    WHERE user_id = ? 
+                    ORDER BY earned_date DESC
+                """, (user_id,))
+                
+                rows = cursor.fetchall()
+                columns = [col[0] for col in cursor.description]
+                
+                achievements = []
+                for row in rows:
+                    achievement = dict(zip(columns, row))
+                    achievements.append(achievement)
+                
+                return achievements
+                
+        except Exception as e:
+            logger.error(f"Error getting achievements: {str(e)}")
+            return []
+    
+    def increment_user_activity(self, user_id: str, activity_type: str, increment: int = 1):
+        """Increment activity counters for gamification"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get current stats or create new record
+                cursor.execute("""
+                    INSERT OR IGNORE INTO user_gamification_stats (user_id) VALUES (?)
+                """, (user_id,))
+                
+                # Update the specific activity counter
+                if activity_type == 'questions_asked':
+                    cursor.execute("""
+                        UPDATE user_gamification_stats 
+                        SET questions_asked = questions_asked + ?, updated_at = ?
+                        WHERE user_id = ?
+                    """, (increment, datetime.now().isoformat(), user_id))
+                
+                elif activity_type == 'voice_interactions':
+                    cursor.execute("""
+                        UPDATE user_gamification_stats 
+                        SET voice_interactions = voice_interactions + ?, updated_at = ?
+                        WHERE user_id = ?
+                    """, (increment, datetime.now().isoformat(), user_id))
+                
+                elif activity_type == 'quizzes_completed':
+                    cursor.execute("""
+                        UPDATE user_gamification_stats 
+                        SET quizzes_completed = quizzes_completed + ?, updated_at = ?
+                        WHERE user_id = ?
+                    """, (increment, datetime.now().isoformat(), user_id))
+                
+                elif activity_type == 'study_time':
+                    cursor.execute("""
+                        UPDATE user_gamification_stats 
+                        SET total_study_time = total_study_time + ?, updated_at = ?
+                        WHERE user_id = ?
+                    """, (increment, datetime.now().isoformat(), user_id))
+                
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"Error incrementing activity: {str(e)}")
+    
+    def get_leaderboard(self, limit: int = 10) -> List[Dict]:
+        """Get top users by XP for leaderboard"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT user_id, total_xp, current_level, current_streak 
+                    FROM user_gamification_stats 
+                    ORDER BY total_xp DESC 
+                    LIMIT ?
+                """, (limit,))
+                
+                rows = cursor.fetchall()
+                columns = [col[0] for col in cursor.description]
+                
+                leaderboard = []
+                for i, row in enumerate(rows, 1):
+                    entry = dict(zip(columns, row))
+                    entry['rank'] = i
+                    # Anonymize user IDs for privacy
+                    entry['username'] = f"User_{entry['user_id'][-4:]}"
+                    leaderboard.append(entry)
+                
+                return leaderboard
+                
+        except Exception as e:
+            logger.error(f"Error getting leaderboard: {str(e)}")
+            return []

@@ -43,11 +43,12 @@ Write-Host "🎯 Starting Streamlit application..." -ForegroundColor Green
 Write-Host ""
 Write-Host "📖 Your AI Study Assistant will open in your browser" -ForegroundColor Cyan
 Write-Host "🌐 URL: http://localhost:8501" -ForegroundColor Cyan
-Write-Host "🛑 Press Ctrl+C to stop the application" -ForegroundColor Yellow
+Write-Host "�️ Voice Tutor feature available in the app" -ForegroundColor Green
+Write-Host "�🛑 Press Ctrl+C to stop the application" -ForegroundColor Yellow
 Write-Host ""
 
 try {
-    streamlit run app.py
+    streamlit run app_simple.py
 } catch {
     Write-Host "❌ Error starting application: $_" -ForegroundColor Red
     Read-Host "Press Enter to exit"

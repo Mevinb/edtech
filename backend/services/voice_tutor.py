@@ -37,13 +37,25 @@ logger = logging.getLogger(__name__)
 class VoiceTutor:
     """Voice Tutor for speech-to-text and text-to-speech functionality"""
     
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(VoiceTutor, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self):
-        self.recognizer = None
-        self.tts_engine = None
-        self.microphone = None
-        
-        # Initialize available services
-        self._initialize_services()
+        if not self._initialized:
+            self.recognizer = None
+            self.tts_engine = None
+            self.microphone = None
+            self.is_speaking = False
+            self.speech_stopped = False
+            
+            # Initialize available services
+            self._initialize_services()
+            VoiceTutor._initialized = True
     
     def _initialize_services(self):
         """Initialize speech recognition and TTS services"""
@@ -62,27 +74,32 @@ class VoiceTutor:
             except Exception as e:
                 logger.error(f"Error initializing speech recognition: {e}")
         
-        # Initialize TTS Engine
+        # Initialize TTS Engine with better error handling
         if PYTTSX3_AVAILABLE:
             try:
-                self.tts_engine = pyttsx3.init()
+                # Check if we already have a working engine
+                if self.tts_engine is None:
+                    import pyttsx3
+                    self.tts_engine = pyttsx3.init(driverName='sapi5', debug=False)
+                    
+                    # Configure TTS settings
+                    self.tts_engine.setProperty('rate', 150)  # Speed of speech
+                    self.tts_engine.setProperty('volume', 0.8)  # Volume level
+                    
+                    # Try to set a pleasant voice
+                    voices = self.tts_engine.getProperty('voices')
+                    if voices:
+                        # Prefer female voice if available
+                        for voice in voices:
+                            if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
+                                self.tts_engine.setProperty('voice', voice.id)
+                                break
+                    
+                    logger.info("TTS engine initialized successfully")
                 
-                # Configure TTS settings
-                self.tts_engine.setProperty('rate', 150)  # Speed of speech
-                self.tts_engine.setProperty('volume', 0.8)  # Volume level
-                
-                # Try to set a pleasant voice
-                voices = self.tts_engine.getProperty('voices')
-                if voices:
-                    # Prefer female voice if available
-                    for voice in voices:
-                        if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
-                            self.tts_engine.setProperty('voice', voice.id)
-                            break
-                
-                logger.info("TTS engine initialized successfully")
             except Exception as e:
-                logger.error(f"Error initializing TTS engine: {e}")
+                logger.warning(f"Local TTS engine failed, will use Google TTS: {e}")
+                self.tts_engine = None
     
     def is_voice_input_available(self) -> bool:
         """Check if voice input is available"""
@@ -90,92 +107,144 @@ class VoiceTutor:
     
     def is_voice_output_available(self) -> bool:
         """Check if voice output is available"""
-        return (PYTTSX3_AVAILABLE and self.tts_engine is not None) or GTTS_AVAILABLE
+        # For now, always return True if gTTS is available to avoid local TTS conflicts
+        return GTTS_AVAILABLE or (PYTTSX3_AVAILABLE and self.tts_engine is not None)
     
-    def listen_for_question(self, timeout: int = 5, phrase_timeout: int = 1) -> Optional[str]:
+    def listen_for_question(self, timeout: int = 10, phrase_timeout: int = 3) -> Optional[str]:
         """
-        Listen for a spoken question from the user
+        Listen for a spoken question from the user with improved error handling
         
         Args:
-            timeout: Maximum time to wait for speech
-            phrase_timeout: Seconds of silence to mark end of phrase
+            timeout: Maximum time to wait for speech (increased to 10s)
+            phrase_timeout: Seconds of silence to mark end of phrase (increased to 3s)
             
         Returns:
             Transcribed text or None if failed
         """
         if not self.is_voice_input_available():
+            logger.warning("Voice input not available")
             return None
         
         try:
-            # Listen for audio
+            # Adjust for ambient noise before listening
             with self.microphone as source:
-                # Listen for speech
+                logger.info("Adjusting for ambient noise...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                logger.info("Listening for speech...")
+                
+                # Listen for speech with longer timeout
                 audio = self.recognizer.listen(
                     source, 
                     timeout=timeout, 
                     phrase_time_limit=phrase_timeout
                 )
             
-            # Recognize speech using Google's free service
+            logger.info("Audio captured, processing...")
+            
+            # Try multiple recognition services for better accuracy
             try:
+                # Primary: Google Speech Recognition
                 text = self.recognizer.recognize_google(audio)
-                logger.info(f"Speech recognized: {text}")
-                return text
+                logger.info(f"Google Speech Recognition result: {text}")
+                return text.strip()
             except sr.UnknownValueError:
-                logger.warning("Could not understand audio")
-                return None
+                logger.warning("Google Speech Recognition could not understand audio")
+                
+                # Fallback: Try Sphinx (offline)
+                try:
+                    text = self.recognizer.recognize_sphinx(audio)
+                    logger.info(f"Sphinx Recognition result: {text}")
+                    return text.strip()
+                except sr.UnknownValueError:
+                    logger.warning("Sphinx could not understand audio either")
+                    return None
+                except sr.RequestError as e:
+                    logger.warning(f"Sphinx error: {e}")
+                    return None
+                    
             except sr.RequestError as e:
-                logger.error(f"Speech recognition service error: {e}")
-                return None
+                logger.error(f"Google Speech Recognition service error: {e}")
+                
+                # Fallback to Sphinx if Google fails
+                try:
+                    text = self.recognizer.recognize_sphinx(audio)
+                    logger.info(f"Fallback Sphinx result: {text}")
+                    return text.strip()
+                except Exception as sphinx_error:
+                    logger.error(f"All speech recognition services failed: {sphinx_error}")
+                    return None
                 
         except sr.WaitTimeoutError:
-            logger.warning("No speech detected within timeout")
+            logger.warning(f"No speech detected within {timeout} seconds")
             return None
         except Exception as e:
-            logger.error(f"Error during speech recognition: {e}")
+            logger.error(f"Unexpected error during speech recognition: {e}")
             return None
     
-    def speak_text(self, text: str, use_gtts: bool = False) -> Optional[str]:
+    def speak_text(self, text: str, use_gtts: bool = True) -> Optional[str]:
         """
-        Convert text to speech
+        Convert text to speech with improved reliability
         
         Args:
             text: Text to speak
-            use_gtts: Whether to use Google TTS (requires internet)
+            use_gtts: Whether to use Google TTS (default True to avoid conflicts)
             
         Returns:
-            Audio file path if using gTTS, None if using local TTS
+            Audio file path if using gTTS, status string if using local TTS
         """
         if not text or not text.strip():
+            logger.warning("Empty text provided for TTS")
             return None
         
-        # Clean text for speech
-        clean_text = self._clean_text_for_speech(text)
+        # Check if speech was stopped
+        if self.speech_stopped:
+            logger.info("Speech was stopped, skipping TTS")
+            return None
         
-        # Use local TTS first (more reliable for real-time)
-        if self.tts_engine and not use_gtts:
-            try:
-                self._speak_with_local_tts(clean_text)
-                return "local_tts_used"  # Indicate local TTS was used
-            except Exception as e:
-                logger.warning(f"Local TTS failed, trying Google TTS: {e}")
+        # Set speaking flag
+        self.is_speaking = True
         
-        # Try Google TTS as fallback or if specifically requested
-        if GTTS_AVAILABLE:
-            try:
-                return self._speak_with_gtts(clean_text)
-            except Exception as e:
-                logger.error(f"Google TTS failed: {e}")
-                # Try local TTS as final fallback
-                if self.tts_engine:
-                    try:
-                        self._speak_with_local_tts(clean_text)
-                        return "local_tts_fallback"
-                    except Exception as local_e:
-                        logger.error(f"Local TTS fallback failed: {local_e}")
-        
-        logger.error("No TTS engine available")
-        return None
+        try:
+            # Clean and prepare text for speech
+            clean_text = self._clean_text_for_speech(text)
+            logger.info(f"Speaking text: {clean_text[:100]}...")
+            
+            # Try local TTS first (more reliable and faster)
+            if self.tts_engine and not use_gtts:
+                try:
+                    logger.info("Using local TTS engine")
+                    result = self._speak_with_local_tts(clean_text)
+                    logger.info("Local TTS completed successfully")
+                    return "local_tts_success"
+                    
+                except Exception as e:
+                    logger.warning(f"Local TTS failed: {e}, trying Google TTS")
+                    use_gtts = True  # Fall back to Google TTS
+            
+            # Use Google TTS if requested or local TTS failed
+            if use_gtts and GTTS_AVAILABLE:
+                try:
+                    logger.info("Using Google TTS")
+                    return self._speak_with_gtts(clean_text)
+                except Exception as e:
+                    logger.error(f"Google TTS failed: {e}")
+                    
+                    # Final fallback to local TTS if Google fails
+                    if self.tts_engine:
+                        try:
+                            logger.info("Final fallback to local TTS")
+                            result = self._speak_with_local_tts(clean_text)
+                            return "local_tts_fallback"
+                        except Exception as local_error:
+                            logger.error(f"All TTS methods failed: {local_error}")
+                            return None
+            
+            logger.error("No TTS engine available or all methods failed")
+            return None
+            
+        finally:
+            # Reset speaking flag
+            self.is_speaking = False
     
     def _speak_with_gtts(self, text: str) -> str:
         """Speak using Google TTS and return audio file path"""
@@ -191,9 +260,52 @@ class VoiceTutor:
         return temp_path
     
     def _speak_with_local_tts(self, text: str):
-        """Speak using local TTS engine"""
-        self.tts_engine.say(text)
-        self.tts_engine.runAndWait()
+        """Speak using local TTS engine with improved error handling"""
+        try:
+            if not self.tts_engine:
+                raise Exception("TTS engine not initialized")
+            
+            # Check if speech was stopped before starting
+            if self.speech_stopped:
+                logger.info("Speech stopped before starting local TTS")
+                return
+            
+            # Use a more robust approach
+            import threading
+            import time
+            
+            def speak_in_thread():
+                try:
+                    # Configure speech properties
+                    self.tts_engine.setProperty('rate', 160)
+                    self.tts_engine.setProperty('volume', 0.9)
+                    
+                    # Speak the text
+                    self.tts_engine.say(text)
+                    
+                    # Use runAndWait in a controlled way
+                    self.tts_engine.runAndWait()
+                    
+                except Exception as e:
+                    logger.error(f"Thread TTS error: {e}")
+            
+            # Run TTS in a separate thread to avoid blocking
+            tts_thread = threading.Thread(target=speak_in_thread, daemon=True)
+            tts_thread.start()
+            
+            # Wait for completion with timeout
+            tts_thread.join(timeout=10)  # Max 10 seconds
+            
+            if tts_thread.is_alive():
+                logger.warning("TTS thread timed out")
+                return
+                
+            logger.info("Local TTS completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Local TTS error: {e}")
+            # Don't try to reinitialize, just fail gracefully
+            raise Exception(f"Local TTS failed: {str(e)}")
     
     def _clean_text_for_speech(self, text: str) -> str:
         """Clean text to make it more suitable for speech synthesis"""
@@ -272,6 +384,79 @@ class VoiceTutor:
             except Exception as e:
                 logger.error(f"Error setting voice volume: {e}")
 
+    def stop_speaking(self):
+        """Stop current speech output immediately"""
+        try:
+            self.speech_stopped = True
+            if self.tts_engine:
+                self.tts_engine.stop()
+                logger.info("Speech stopped successfully")
+                return True
+        except Exception as e:
+            logger.error(f"Error stopping speech: {e}")
+        return False
+    
+    def restart_voice_engine(self):
+        """Restart the voice engine completely"""
+        try:
+            # Stop any current speech
+            self.stop_speaking()
+            
+            # Reinitialize the TTS engine
+            if PYTTSX3_AVAILABLE:
+                try:
+                    # Clean up old engine
+                    if self.tts_engine:
+                        try:
+                            self.tts_engine.stop()
+                        except:
+                            pass
+                    
+                    # Create new engine
+                    self.tts_engine = pyttsx3.init()
+                    
+                    # Reconfigure settings
+                    self.tts_engine.setProperty('rate', 150)
+                    self.tts_engine.setProperty('volume', 0.8)
+                    
+                    # Set voice preference
+                    voices = self.tts_engine.getProperty('voices')
+                    if voices:
+                        for voice in voices:
+                            if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
+                                self.tts_engine.setProperty('voice', voice.id)
+                                break
+                    
+                    self.speech_stopped = False
+                    logger.info("Voice engine restarted successfully")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Error restarting TTS engine: {e}")
+                    return False
+            else:
+                logger.warning("pyttsx3 not available for restart")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error during voice engine restart: {e}")
+            return False
+    
+    def get_speech_status(self):
+        """Get current speech status"""
+        return {
+            "is_speaking": self.is_speaking,
+            "speech_stopped": self.speech_stopped,
+            "engine_available": self.tts_engine is not None,
+            "voice_input_available": self.is_voice_input_available(),
+            "voice_output_available": self.is_voice_output_available()
+        }
+    
+    def clear_speech_flag(self):
+        """Clear the speech stopped flag to allow new speech"""
+        self.speech_stopped = False
+        logger.info("Speech flag cleared - ready for new speech")
+
 # Helper functions for Streamlit integration
 def create_audio_player_html(audio_file_path: str) -> str:
     """Create HTML audio player for Streamlit"""
@@ -299,16 +484,3 @@ def get_microphone_html() -> str:
         <p style="color: white; font-size: 0.9rem; margin: 0;">Click the button below and speak your question</p>
     </div>
     """
-
-# Example usage
-if __name__ == "__main__":
-    # Test voice tutor functionality
-    voice_tutor = VoiceTutor()
-    
-    print("Voice Tutor Status:")
-    print(f"Input available: {voice_tutor.is_voice_input_available()}")
-    print(f"Output available: {voice_tutor.is_voice_output_available()}")
-    
-    # Test TTS
-    if voice_tutor.is_voice_output_available():
-        voice_tutor.speak_text("Hello! I am your AI voice tutor. How can I help you learn today?")

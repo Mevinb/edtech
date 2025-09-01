@@ -41,9 +41,10 @@ echo 🎯 Starting Streamlit application...
 echo.
 echo 📖 Your AI Study Assistant will open in your browser
 echo 🌐 URL: http://localhost:8501
-echo 🛑 Press Ctrl+C to stop the application
+echo �️ Voice Tutor feature available in the app
+echo �🛑 Press Ctrl+C to stop the application
 echo.
 
-streamlit run app.py
+streamlit run app_simple.py
 
 pause
